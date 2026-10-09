@@ -7,14 +7,32 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # Starts as root: creates a self-signed TLS cert once (kept in the data volume), then
+    # hands over to the image entrypoint, which drops to the postgres user.
+    # ponytail: self-signed, so clients encrypt but cannot verify the server; mount a
+    # CA-signed cert instead if clients need sslmode=verify-full.
     # summarize_wal: required by Databasus incremental physical backups (PG17+)
-    command: postgres -c summarize_wal=on
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        ssl=/var/lib/postgresql/ssl
+        if [ ! -f $$ssl/server.key ]; then
+          mkdir -p $$ssl
+          openssl req -new -x509 -days 3650 -nodes -subj /CN=postgres -keyout $$ssl/server.key -out $$ssl/server.crt
+          chown -R postgres:postgres $$ssl
+          chmod 600 $$ssl/server.key
+        fi
+        exec docker-entrypoint.sh postgres -c summarize_wal=on -c ssl=on -c ssl_cert_file=$$ssl/server.crt -c ssl_key_file=$$ssl/server.key -c hba_file=/etc/postgresql/pg_hba.conf
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      # IPv4 only on purpose: Docker forwards IPv6 through docker-proxy, which hides the
+      # client address and would let internet clients match the Docker-network rules in pg_hba.conf.
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       # PG18 image keeps data under /var/lib/postgresql/18/docker, so mount the parent
       - postgres-data:/var/lib/postgresql
-      - ./initdb:/docker-entrypoint-initdb.d:ro
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

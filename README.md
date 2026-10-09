@@ -20,14 +20,15 @@ docker compose up -d
 | `POSTGRES_USER` | Superuser created on first start |
 | `POSTGRES_PASSWORD` | Password for that superuser |
 | `POSTGRES_DB` | Default database created on first start |
+| `POSTGRES_BIND` | `127.0.0.1` (default): this server only. `0.0.0.0`: open to the internet, see [Connecting from another server](#connecting-from-another-server) |
 | `POSTGRES_PORT` | Host port for PostgreSQL (default `5432`) |
 | `DATABASUS_PORT` | Host port for the Databasus web UI (default `4005`) |
 
 `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` are only read when the data volume is empty.
 Changing them in `.env` later does not change the running database; use `ALTER USER` instead.
 
-PostgreSQL listens on `127.0.0.1` only. Databasus listens on all interfaces, so firewall port `4005`
-if the server is reachable from the internet.
+Databasus listens on all interfaces. Block port `4005` in your cloud provider's firewall if the server is
+reachable from the internet: `ufw` does not apply to ports published by Docker.
 
 ## Managing app users and databases
 
@@ -59,8 +60,35 @@ DROP DATABASE blog;
 DROP ROLE blog;
 ```
 
+## Connecting from another server
+
+Set `POSTGRES_BIND=0.0.0.0` in `.env` and run `docker compose up -d`. Access is then controlled by
+[pg_hba.conf](pg_hba.conf):
+
+| From | Allowed |
+|---|---|
+| Inside the container (`db.sh`, `docker exec`) | Yes, no password |
+| Docker networks and the server itself (Databasus, SSH tunnel) | Yes, password, TLS optional |
+| The internet | App users only, password and TLS required. The `postgres` superuser and replication are rejected |
+
+The app connects with TLS:
+
+```
+postgres://blog:<password>@<server-ip>:5432/blog?sslmode=require
+```
+
+With node-postgres (`pg`), use `sslmode=no-verify` instead: it treats `require` as `verify-full`,
+which fails against the self-signed certificate.
+
+The certificate is self-signed and created on first start in the data volume (`/var/lib/postgresql/ssl`).
+Traffic is encrypted, but clients cannot verify the server's identity. If your provider has a firewall,
+allow port `5432` there. For admin work (DataGrip and similar), keep using an SSH tunnel to `localhost:5432`.
+
+Stick to IPv4 for `POSTGRES_BIND`. Docker forwards IPv6 through `docker-proxy`, which hides the client
+address and would let internet clients pass as Docker-network clients.
+
 ## Backups
 
 Open Databasus at `http://<server>:4005` and add the PostgreSQL database there.
 The stack is already prepared for Databasus physical backups: `summarize_wal` is on, and
-[initdb/10-allow-replication.sh](initdb/10-allow-replication.sh) allows replication connections.
+[pg_hba.conf](pg_hba.conf) allows replication connections from Docker networks.
