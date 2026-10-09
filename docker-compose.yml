@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # summarize_wal: required by Databasus incremental physical backups (PG17+)
+    command: postgres -c summarize_wal=on
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # PG18 image keeps data under /var/lib/postgresql/18/docker, so mount the parent
+      - postgres-data:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  databasus:
+    image: databasus/databasus:latest
+    container_name: databasus
+    restart: unless-stopped
+    ports:
+      - "${DATABASUS_PORT:-4005}:4005"
+    volumes:
+      - databasus-data:/databasus-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "databasus", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres-data:
+  databasus-data:
