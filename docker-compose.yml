@@ -7,24 +7,40 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    # Starts as root: creates a self-signed TLS cert once (kept in the data volume), then
-    # hands over to the image entrypoint, which drops to the postgres user.
-    # ponytail: self-signed, so clients encrypt but cannot verify the server; mount a
-    # CA-signed cert instead if clients need sslmode=verify-full.
+      POSTGRES_TLS_HOST: ${POSTGRES_TLS_HOST:-}
+    # Starts as root to issue TLS certs into the data volume, then hands over to the image
+    # entrypoint, which drops to the postgres user. Clients verify the server with ssl/ca.crt.
+    # The server cert is separate from the CA cert because rustls-based clients reject a
+    # CA cert presented by the server (CaUsedAsEndEntity).
     # summarize_wal: required by Databasus incremental physical backups (PG17+)
     command:
       - sh
       - -c
       - |
         set -e
-        ssl=/var/lib/postgresql/ssl
-        if [ ! -f $$ssl/server.key ]; then
-          mkdir -p $$ssl
-          openssl req -new -x509 -days 3650 -nodes -subj /CN=postgres -keyout $$ssl/server.key -out $$ssl/server.crt
-          chown -R postgres:postgres $$ssl
-          chmod 600 $$ssl/server.key
+        mkdir -p /var/lib/postgresql/ssl
+        cd /var/lib/postgresql/ssl
+        host=$$POSTGRES_TLS_HOST
+        if [ ! -f ca.crt ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=postgres-ca -keyout ca.key -out ca.crt
+          rm -f host
         fi
-        exec docker-entrypoint.sh postgres -c summarize_wal=on -c ssl=on -c ssl_cert_file=$$ssl/server.crt -c ssl_key_file=$$ssl/server.key -c hba_file=/etc/postgresql/pg_hba.conf
+        # Reissue the server cert when POSTGRES_TLS_HOST changes. The CA stays, so clients keep working.
+        if [ "$$(cat host 2>/dev/null || echo -)" != "$$host" ]; then
+          case "$$host" in
+            "") san= ;;
+            *:*) san=IP:$$host ;;
+            *[!0-9.]*) san=DNS:$$host ;;
+            *) san=IP:$$host ;;
+          esac
+          printf 'basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n%s\n' "$${san:+subjectAltName=$$san}" > server.ext
+          openssl req -newkey rsa:2048 -nodes -subj /CN=postgres -keyout server.key -out server.csr
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 3650 -extfile server.ext -out server.crt
+          chown postgres:postgres server.key server.crt
+          chmod 600 server.key ca.key
+          printf %s "$$host" > host
+        fi
+        exec docker-entrypoint.sh postgres -c summarize_wal=on -c ssl=on -c ssl_cert_file=/var/lib/postgresql/ssl/server.crt -c ssl_key_file=/var/lib/postgresql/ssl/server.key -c hba_file=/etc/postgresql/pg_hba.conf
     ports:
       # IPv4 only on purpose: Docker forwards IPv6 through docker-proxy, which hides the
       # client address and would let internet clients match the Docker-network rules in pg_hba.conf.
