@@ -120,6 +120,8 @@ address and would let internet clients pass as Docker-network clients.
 
 ## Backups
 
-Open Databasus at `http://<server>:4005` and add the PostgreSQL database there.
+Open Databasus at `http://<server>:4005` and add the PostgreSQL database there. Databasus reaches PostgreSQL
+over the Docker network, so use host `postgres` and port `5432` (not the server's IP, and not `POSTGRES_PORT`).
+SSL mode can be `Disable` or `Require`; the traffic never leaves the server.
 The stack is already prepared for Databasus physical backups: `summarize_wal` is on, and
 [pg_hba.conf](pg_hba.conf) allows replication connections from Docker networks.
